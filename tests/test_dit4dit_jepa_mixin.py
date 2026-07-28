@@ -11,6 +11,7 @@ from torch import nn
 from DiT4DiT.model.framework.DiT4DiT import DiT4DiT
 from DiT4DiT.model.framework.dit4dit_jepa import DiT4DiTJEPAFrameworkMixin
 from DiT4DiT.model.modules.action_model.ActionDiT import FlowmatchingActionHead
+from DiT4DiT.model.modules.vlm.Cosmos25 import _Cosmos25_Interface
 
 
 class _CaptureAction(nn.Module):
@@ -76,6 +77,40 @@ def test_dream_condition_sees_current_state_and_teacher_sees_future():
     harness._forward_dit4dit_action(_examples(state), torch.randn(2, 3, 8), None)
     assert torch.equal(harness.action_model.captured_state, torch.from_numpy(state[:, :1]))
     assert torch.equal(harness.action_model.captured_future_state, torch.from_numpy(state[:, 1:]))
+
+
+def test_input_ablation_ignores_dream_flags_left_in_dataset_config():
+    harness = _StateHarness()
+    harness.action_model.tactile_mode = "input"
+    harness.config.datasets.vla_data = OmegaConf.create(
+        {
+            "tactile_mode": "input",
+            "dream_horizon": 2,
+            "vision_horizon": 2,
+            "dream_state": True,
+            "dream_vision": True,
+        }
+    )
+    harness._validate_dataset_jepa_config()
+
+
+def test_video_only_jepa_lifecycle_hooks_are_noops():
+    harness = _StateHarness()
+    harness.action_model = None
+    assert harness.jepa_loss_weights() == {}
+    harness.sync_jepa_teachers()
+    harness.update_jepa_teachers()
+
+
+def test_cosmos_input_split_keeps_future_pixels_out_of_condition_video():
+    interface = object.__new__(_Cosmos25_Interface)
+    current = torch.zeros(3, 2, 2)
+    future_a = torch.ones(3, 2, 2)
+    future_b = torch.full((3, 2, 2), 2.0)
+    first = interface.build_cosmos_inputs([[current, future_a]], ["move"])
+    second = interface.build_cosmos_inputs([[current, future_b]], ["move"])
+    assert torch.equal(first["videos"], second["videos"])
+    assert not torch.equal(first["future_videos"], second["future_videos"])
 
 
 def test_ablation_mode_effectively_disables_dataset_dream_flags():

@@ -99,6 +99,13 @@ def test_tactile_encoder_variants_shape_and_backward(encoder_type):
     assert any(parameter.grad is not None for parameter in encoder.parameters())
 
 
+def test_configured_region_sizes_must_match_grids():
+    config = _action_config(mode="input")
+    config.framework.action_model.tactile_region_sizes = [112]
+    with pytest.raises(ValueError, match="region_sizes"):
+        FlowmatchingActionHead(config)
+
+
 def test_ema_teacher_is_frozen_and_moves_toward_student():
     student = TactileEncoder(embed_dim=16, hidden_dim=8, num_tokens=2, num_heads=2)
     teacher = build_ema_teacher(student)
@@ -152,3 +159,33 @@ def test_dream_mode_returns_all_losses_without_teacher_gradients():
     teachers = (model.tactile_target_encoder, model.state_target_encoder)
     assert all(parameter.grad is None for teacher in teachers for parameter in teacher.parameters())
     assert any(parameter.grad is not None for parameter in model.tactile_dream_head.parameters())
+
+
+def test_future_vision_target_cannot_change_action_loss_with_fixed_rng():
+    model = FlowmatchingActionHead(_action_config("dream", dream_vision=True))
+    vl, actions, mask, state = _action_inputs()
+    tactile = torch.randint(0, 256, (2, 3, RAW_DIM), dtype=torch.uint8)
+    first_target = torch.randn(2, 2, 64)
+    second_target = first_target + 3.0
+
+    torch.manual_seed(123)
+    first = model(
+        vl,
+        actions,
+        mask,
+        state=state,
+        tactile=tactile,
+        future_vision_target=first_target,
+    )
+    torch.manual_seed(123)
+    second = model(
+        vl,
+        actions,
+        mask,
+        state=state,
+        tactile=tactile,
+        future_vision_target=second_target,
+    )
+
+    assert torch.equal(first["action_loss"], second["action_loss"])
+    assert not torch.equal(first["vision_jepa_loss"], second["vision_jepa_loss"])

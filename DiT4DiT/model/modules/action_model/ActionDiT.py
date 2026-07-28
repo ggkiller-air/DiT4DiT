@@ -289,6 +289,12 @@ class FlowmatchingActionHead(nn.Module):
             region_cols = tuple(config.get("tactile_region_cols", [cols for _, cols in REGION_GRIDS]))
             if len(region_rows) != len(region_cols):
                 raise ValueError("tactile_region_rows and tactile_region_cols must have equal lengths")
+            region_sizes = tuple(rows * cols for rows, cols in zip(region_rows, region_cols, strict=True))
+            configured_region_sizes = tuple(config.get("tactile_region_sizes", region_sizes))
+            if configured_region_sizes != region_sizes:
+                raise ValueError(
+                    "tactile_region_sizes must match tactile_region_rows * tactile_region_cols"
+                )
             encoder_type = str(config.get("tactile_encoder_type", "mlp"))
             if encoder_type == "cnn" and bool(config.get("tactile_cnn_coord", False)):
                 encoder_type = "coord"

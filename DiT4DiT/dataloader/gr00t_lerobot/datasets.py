@@ -1081,7 +1081,11 @@ class LeRobotSingleDataset(Dataset):
         original_key = tactile_meta.original_key or subkey
         if self.curr_traj_data is None or original_key not in self.curr_traj_data.columns:
             raise KeyError(f"No tactile column {original_key!r} in trajectory {trajectory_id}")
-        raw = np.stack(self.curr_traj_data[original_key]).astype(np.uint8, copy=False)
+        raw = np.stack(self.curr_traj_data[original_key])
+        if raw.ndim != 2 or raw.shape[-1] != 256:
+            raise ValueError(f"Tactile column {original_key!r} must have shape [T, 256], got {raw.shape}")
+        if raw.dtype != np.uint8:
+            raise TypeError(f"Tactile column {original_key!r} must be uint8, got {raw.dtype}")
         return self.retrieve_data_and_pad(
             array=raw,
             step_indices=step_indices,

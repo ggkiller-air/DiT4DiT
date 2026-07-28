@@ -10,8 +10,10 @@ from torch.nn import functional as F
 
 from DiT4DiT.dataloader.gr00t_lerobot.data_config import UnitreeG1SonicDataConfig
 from DiT4DiT.dataloader.lerobot_datasets import get_vla_dataset
+from DiT4DiT.model.modules.action_model.tactile_jepa import REGION_GRIDS, REGION_SIZES, VALID_IDX
 
 DATASET_PATH = Path("/root/Projects/data/carry-bucket-stereo")
+RECOMMENDED_CONFIG = Path("DiT4DiT/config/real_robot/dit4dit_g1_sonic_jepa.yaml")
 
 
 def _data_config(**overrides):
@@ -56,6 +58,21 @@ def test_sonic_modalities_follow_ablation_mode():
     )
     assert longer_vision["tactile"].delta_indices == [0, 1, 2]
     assert longer_vision["video"].delta_indices == [0, 1, 2, 3, 4]
+
+    with pytest.raises(ValueError, match="same consecutive deltas"):
+        config.modality_config_for(_data_config(video_delta_indices=[0, 2, 4, 6, 8]))
+    with pytest.raises(ValueError, match="action_video_freq_ratio=1"):
+        config.modality_config_for(_data_config(action_video_freq_ratio=2))
+
+
+def test_recommended_config_pins_the_isaac_tactile_layout():
+    action_config = OmegaConf.load(RECOMMENDED_CONFIG).framework.action_model
+    assert tuple(action_config.tactile_valid_idx) == VALID_IDX
+    assert tuple(action_config.tactile_region_sizes) == REGION_SIZES
+    configured_grids = tuple(
+        zip(action_config.tactile_region_rows, action_config.tactile_region_cols, strict=True)
+    )
+    assert configured_grids == REGION_GRIDS
 
 
 @pytest.mark.skipif(not DATASET_PATH.exists(), reason="carry-bucket-stereo is not installed")

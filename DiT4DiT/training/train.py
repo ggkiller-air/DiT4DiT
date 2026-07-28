@@ -161,7 +161,7 @@ class VLATrainer(TrainerUtils):
 
         self._save_resolved_config(Path(self.config.output_dir) / "config.yaml")
 
-        # load pretrained weights
+        # Resolve pretrained weights or a full training-state resume.
         self._init_checkpointing()
         if getattr(self, "_sync_jepa_teachers_after_load", False) and hasattr(
             self.model, "sync_jepa_teachers"
@@ -227,26 +227,38 @@ class VLATrainer(TrainerUtils):
         #  print model trainable parameters:
         self.print_trainable_parameters(self.model)
 
-        # initialize distributed training components
-        self.model, self.optimizer, self.vla_train_dataloader = self.setup_distributed_training(
+        # Initialize distributed training components. The scheduler must be prepared as
+        # well so Accelerate includes it in save_state/load_state checkpoints.
+        (
+            self.model,
+            self.optimizer,
+            self.vla_train_dataloader,
+            self.lr_scheduler,
+        ) = self.setup_distributed_training(
             self.accelerator,  # must be the first param
             self.model,
             self.optimizer,
             self.vla_train_dataloader,
+            self.lr_scheduler,
         )
+
+        if self._resume_state_checkpoint is not None:
+            self._load_checkpoint(self._resume_state_checkpoint)
 
         self._init_wandb()
 
     def _save_resolved_config(self, path):
         if not self.accelerator.is_main_process:
             return
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
         config = self.config.unwrap() if isinstance(self.config, AccessTrackedConfig) else self.config
         OmegaConf.save(config, path, resolve=True)
 
 
     def _adjust_lr_scheduler_for_resume(self):
         """根据已完成的步数调整学习率调度器状态"""
-        if self.completed_steps > 0:
+        if self.completed_steps > 0 and self._resume_state_checkpoint is None:
             logger.info(f"Adjusting LR scheduler for resume from step {self.completed_steps}")
             
             # 方法1: 直接模拟已完成的步数（适用于大多数调度器）
@@ -288,16 +300,30 @@ class VLATrainer(TrainerUtils):
         is_resume = getattr(self.config.trainer, "is_resume", False)
         self.resume_from_checkpoint = pretrained_checkpoint
         self._sync_jepa_teachers_after_load = False
+        self._resume_state_checkpoint = None
         if is_resume:
             # 恢复训练状态
             resume_from_checkpoint, self.completed_steps = self._get_latest_checkpoint(self.checkpoint_dir)
             
             if resume_from_checkpoint:
                 self.resume_from_checkpoint = resume_from_checkpoint
-                self.model = self.load_pretrained_backbones(self.model, self.resume_from_checkpoint, reload_modules=None)
-                self._sync_jepa_teachers_after_load = bool(
-                    getattr(self.model, "_jepa_teacher_keys_missing", False)
-                )
+                if os.path.isdir(resume_from_checkpoint):
+                    self._resume_state_checkpoint = resume_from_checkpoint
+                else:
+                    # Backward compatibility for old model-only checkpoints. New
+                    # checkpoints use Accelerator state directories below.
+                    self.model = self.load_pretrained_backbones(
+                        self.model,
+                        self.resume_from_checkpoint,
+                        reload_modules=None,
+                    )
+                    self._sync_jepa_teachers_after_load = bool(
+                        getattr(self.model, "_jepa_teacher_keys_missing", False)
+                    )
+                    logger.warning(
+                        "Legacy checkpoint contains model weights only; optimizer and RNG state "
+                        "cannot be restored exactly."
+                    )
                 logger.info(f"Resuming training from checkpoint: {self.resume_from_checkpoint}, steps: {self.completed_steps}")
                 return None
             else:
@@ -320,20 +346,17 @@ class VLATrainer(TrainerUtils):
     
 
     def _load_checkpoint(self, checkpoint_path):
-        """load checkpoint"""
+        """Restore a complete Accelerate training state after prepare()."""
         self.accelerator.load_state(checkpoint_path)
         self.accelerator.print(f"Resumed from checkpoint: {checkpoint_path}")
 
     def _save_checkpoint(self):
-        """save current training state"""
+        """Save model, optimizer, scheduler, scaler, and RNG state on every rank."""
+        checkpoint_path = os.path.join(self.checkpoint_dir, f"steps_{self.completed_steps}")
+        self.accelerator.save_state(checkpoint_path)
+        self.accelerator.wait_for_everyone()
 
         if self.accelerator.is_main_process:
-
-            checkpoint_path = os.path.join(self.checkpoint_dir, f"steps_{self.completed_steps}")
-            # save model state
-            state_dict = self.accelerator.get_state_dict(self.model)
-            torch.save(state_dict, checkpoint_path + "_pytorch_model.pt")
-
             # save training metadata
             summary_data = {
                 "steps": self.completed_steps,
@@ -341,6 +364,7 @@ class VLATrainer(TrainerUtils):
             with open(os.path.join(self.config.output_dir, "summary.jsonl"), "a") as f:
                 f.write(json.dumps(summary_data) + "\n")
             self.accelerator.print(f"✅ Checkpoint saved at {checkpoint_path}")
+            self._save_resolved_config(Path(checkpoint_path) / "config.yaml")
             # ✅ Save accessed configuration only
             if isinstance(self.config, AccessTrackedConfig):
                 logger.info("📊 Saving accessed configuration...")

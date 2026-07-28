@@ -237,6 +237,20 @@ class TrainerUtils:
 
         if reload_modules:  # partial load
             module_paths = [p.strip() for p in reload_modules.split(",") if p.strip()]
+            teacher_modules = (
+                "action_model.tactile_target_encoder",
+                "action_model.state_target_encoder",
+            )
+            invalid_teacher_paths = [
+                path
+                for path in module_paths
+                if any(path == prefix or path.startswith(prefix + ".") for prefix in teacher_modules)
+            ]
+            if invalid_teacher_paths:
+                raise ValueError(
+                    "Partial reload cannot target EMA teachers directly because it would "
+                    f"desynchronize them from online encoders: {invalid_teacher_paths}"
+                )
             for path in module_paths:
                 reload_modules = path.split(".")
                 module = model
@@ -484,30 +498,25 @@ class TrainerUtils:
             self.accelerator.print(f"No checkpoint directory found at {checkpoint_dir}")
             return None, 0
 
-        # 获取所有符合命名规则，确保只匹配以 .pt 结尾的文件
-        checkpoints = [
-            f for f in os.listdir(checkpoint_dir) 
-            if re.match(r"steps_(\d+)_pytorch_model\.pt$", f)  # 添加 $ 确保以 .pt 结尾
-            and os.path.isfile(os.path.join(checkpoint_dir, f))  # 确保是文件
-        ]
+        # Prefer complete Accelerate state directories. Keep old model-only .pt
+        # files discoverable for backward-compatible weight restarts.
+        checkpoints = []
+        for name in os.listdir(checkpoint_dir):
+            path = os.path.join(checkpoint_dir, name)
+            state_match = re.fullmatch(r"steps_(\d+)", name)
+            legacy_match = re.fullmatch(r"steps_(\d+)_pytorch_model\.pt", name)
+            if state_match and os.path.isdir(path):
+                checkpoints.append((name, int(state_match.group(1)), True))
+            elif legacy_match and os.path.isfile(path):
+                checkpoints.append((name, int(legacy_match.group(1)), False))
 
         if not checkpoints:
             self.accelerator.print(f"No checkpoints found in {checkpoint_dir}")
             return None, 0
 
-        # 提取步数并排序
-        try:
-            checkpoints_with_steps = [
-                (ckpt, int(re.search(r"steps_(\d+)_pytorch_model\.pt", ckpt).group(1)))
-                for ckpt in checkpoints
-            ]
-        except AttributeError as e:
-            self.accelerator.print(f"Error parsing checkpoint filenames: {e}")
-            return None, 0
-
-        # 按步数排序，获取最新的 checkpoint
-        checkpoints_with_steps.sort(key=lambda x: x[1])
-        latest_checkpoint, completed_steps = checkpoints_with_steps[-1]
+        # Sort by step and prefer a complete state directory at an equal step.
+        checkpoints.sort(key=lambda item: (item[1], item[2]))
+        latest_checkpoint, completed_steps, _ = checkpoints[-1]
 
         latest_checkpoint_path = os.path.join(checkpoint_dir, latest_checkpoint)
         self.accelerator.print(f"Latest checkpoint found: {latest_checkpoint_path}")

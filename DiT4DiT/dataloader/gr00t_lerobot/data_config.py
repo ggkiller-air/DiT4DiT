@@ -1115,10 +1115,18 @@ class UnitreeG1SonicDataConfig:
             video_indices = list(range(vision_horizon + 1)) if dream_vision else [0]
         else:
             video_indices = list(configured_video)
-        if dream_vision and len(video_indices) < vision_horizon + 1:
-            raise ValueError(
-                f"vision-JEPA requires at least {vision_horizon + 1} video frames, got {video_indices}"
-            )
+        if dream_vision:
+            expected_video_indices = list(range(vision_horizon + 1))
+            if video_indices[: len(expected_video_indices)] != expected_video_indices:
+                raise ValueError(
+                    "vision-JEPA frames must use the same consecutive deltas as tactile/state; "
+                    f"expected prefix {expected_video_indices}, got {video_indices}"
+                )
+            action_video_freq_ratio = int(data_cfg.get("action_video_freq_ratio", 1))
+            if action_video_freq_ratio != 1:
+                raise ValueError(
+                    "vision-JEPA requires action_video_freq_ratio=1 so future modalities stay time-aligned"
+                )
 
         configs = {
             "video": ModalityConfig(delta_indices=video_indices, modality_keys=self.video_keys),

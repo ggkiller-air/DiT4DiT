@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
+from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 import torch
 from omegaconf import OmegaConf
 from torch import nn
@@ -10,7 +12,7 @@ from torch import nn
 from DiT4DiT.model.framework.dit4dit_jepa import DiT4DiTJEPAFrameworkMixin
 from DiT4DiT.training import train
 from DiT4DiT.training.trainer_utils import trainer_tools
-from DiT4DiT.training.trainer_utils.trainer_tools import build_param_lr_groups
+from DiT4DiT.training.trainer_utils.trainer_tools import TrainerUtils, build_param_lr_groups
 
 
 def test_build_accelerator_wires_yaml_gradient_accumulation(monkeypatch):
@@ -146,6 +148,88 @@ def test_optimizer_groups_exclude_frozen_parameters():
     groups = build_param_lr_groups(model, cfg)
     optimized = {id(parameter) for group in groups for parameter in group["params"]}
     assert optimized == {id(parameter) for parameter in model.online.parameters()}
+
+
+def test_partial_reload_rejects_direct_ema_teacher_load(tmp_path, monkeypatch):
+    model = nn.Module()
+    model.action_model = nn.Module()
+    model.action_model.tactile_target_encoder = nn.Linear(2, 2)
+    checkpoint = tmp_path / "model.pt"
+    torch.save(model.state_dict(), checkpoint)
+    monkeypatch.setattr(torch.distributed, "get_rank", lambda: 0)
+
+    with pytest.raises(ValueError, match="EMA teachers"):
+        TrainerUtils.load_pretrained_backbones(
+            model,
+            str(checkpoint),
+            reload_modules="action_model.tactile_target_encoder",
+        )
+
+
+class _CheckpointAccelerator:
+    num_processes = 1
+    gradient_accumulation_steps = 1
+    is_main_process = True
+
+    def __init__(self):
+        self.saved = []
+        self.messages = []
+
+    def save_state(self, path):
+        path = Path(path)
+        path.mkdir(parents=True)
+        (path / "optimizer.bin").write_bytes(b"state")
+        self.saved.append(path)
+
+    @staticmethod
+    def wait_for_everyone():
+        return None
+
+    def print(self, message):
+        self.messages.append(str(message))
+
+
+def _checkpoint_trainer(tmp_path):
+    model = nn.Linear(2, 2)
+    accelerator = _CheckpointAccelerator()
+    cfg = OmegaConf.create(
+        {
+            "output_dir": str(tmp_path),
+            "datasets": {"vla_data": {"per_device_batch_size": 1}},
+            "trainer": {"is_resume": False, "pretrained_checkpoint": None},
+        }
+    )
+    trainer = train.VLATrainer(
+        cfg,
+        model,
+        [],
+        torch.optim.SGD(model.parameters(), lr=0.1),
+        _CountingScheduler(),
+        accelerator,
+    )
+    trainer.checkpoint_dir = str(tmp_path / "checkpoints")
+    Path(trainer.checkpoint_dir).mkdir()
+    return trainer
+
+
+def test_checkpoint_saves_full_state_directory_and_resolved_config(tmp_path):
+    trainer = _checkpoint_trainer(tmp_path)
+    trainer.completed_steps = 12
+    trainer._save_checkpoint()
+    checkpoint = tmp_path / "checkpoints" / "steps_12"
+    assert trainer.accelerator.saved == [checkpoint]
+    assert (checkpoint / "optimizer.bin").is_file()
+    assert (checkpoint / "config.yaml").is_file()
+
+
+def test_latest_checkpoint_prefers_full_state_at_same_step(tmp_path):
+    trainer = _checkpoint_trainer(tmp_path)
+    checkpoint_dir = Path(trainer.checkpoint_dir)
+    (checkpoint_dir / "steps_5_pytorch_model.pt").write_bytes(b"legacy")
+    (checkpoint_dir / "steps_5").mkdir()
+    latest, step = trainer._get_latest_checkpoint(str(checkpoint_dir))
+    assert Path(latest) == checkpoint_dir / "steps_5"
+    assert step == 5
 
 
 def test_partial_online_encoder_reload_marks_teachers_for_sync(tmp_path, monkeypatch):
