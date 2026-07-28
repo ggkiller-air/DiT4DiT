@@ -366,9 +366,13 @@ class LeRobotSingleDataset(Dataset):
         stats_path = self.dataset_path / LE_ROBOT_STATS_FILENAME
         try:
             with open(stats_path, "r") as f:
-                le_statistics = json.load(f)
-            for stat in le_statistics.values():
+                raw_statistics = json.load(f)
+            le_statistics = {}
+            for key, stat in raw_statistics.items():
+                if key.startswith("_"):
+                    continue
                 DatasetStatisticalValues.model_validate(stat)
+                le_statistics[key] = stat
         except (FileNotFoundError, ValidationError) as e:
             print(f"Failed to load dataset statistics: {e}")
             print(f"Calculating dataset statistics for {self.dataset_name}")
@@ -1067,6 +1071,24 @@ class LeRobotSingleDataset(Dataset):
             padding_strategy="first_last" if state_or_action_cfg.absolute else "zero",
         )
 
+    def get_tactile(self, trajectory_id: int, key: str, base_index: int) -> np.ndarray:
+        """Read a raw tactile window and pad only within the current episode."""
+        step_indices = self.delta_indices[key] + base_index
+        trajectory_index = self.get_trajectory_index(trajectory_id)
+        max_length = self.trajectory_lengths[trajectory_index]
+        subkey = key.removeprefix("tactile.")
+        tactile_meta = self.lerobot_modality_meta.tactile[subkey]
+        original_key = tactile_meta.original_key or subkey
+        if self.curr_traj_data is None or original_key not in self.curr_traj_data.columns:
+            raise KeyError(f"No tactile column {original_key!r} in trajectory {trajectory_id}")
+        raw = np.stack(self.curr_traj_data[original_key]).astype(np.uint8, copy=False)
+        return self.retrieve_data_and_pad(
+            array=raw,
+            step_indices=step_indices,
+            max_length=max_length,
+            padding_strategy="first_last",
+        )
+
     def get_language(
         self,
         trajectory_id: int,
@@ -1139,6 +1161,8 @@ class LeRobotSingleDataset(Dataset):
             return self.get_video(trajectory_id, key, base_index)
         elif modality == "state" or modality == "action":
             return self.get_state_or_action(trajectory_id, modality, key, base_index)
+        elif modality == "tactile":
+            return self.get_tactile(trajectory_id, key, base_index)
         elif modality == "language":
             return self.get_language(trajectory_id, key, base_index)
         else:
@@ -1662,10 +1686,8 @@ class LeRobotMixtureDataset(Dataset):
                 raw_data = dataset.get_step_data(trajectory_id, step)    
                 data = dataset.transforms(raw_data)
                 
-                # Process video keys and optionally expose a "next frame" for auxiliary future-frame supervision.
-                # If video_delta_indices=[0,1], then data[video_key] has length>=2.
-                prim_t0, wrist_t0 = [], []
-                prim_t1, wrist_t1 = [], []
+                # Preserve time order and concatenate synchronized camera views horizontally.
+                view_sequences = []
 
                 def _to_img_tensor(image_any) -> torch.Tensor:
                     # Accept numpy(H,W,C) or torch(C,H,W)/(H,W,C)
@@ -1747,25 +1769,20 @@ class LeRobotMixtureDataset(Dataset):
                     # Compute pixel-space sample indices (e.g. ratio=4, 17 frames -> [0,4,8,12,16])
                     video_sample_indices = list(range(0, num_frames, action_video_freq_ratio))
 
-                    for si in video_sample_indices:
-                        img = _to_img_tensor(get_frame(si))
-                        if "wrist" not in video_key:
-                            prim_t0.append(img)
-                        else:
-                            wrist_t0.append(img)
+                    view_sequences.append([_to_img_tensor(get_frame(si)) for si in video_sample_indices])
 
-                # If wrist views exist, concatenate prim and wrist side-by-side
-                # per timestep so Cosmos VAE sees a coherent temporal sequence.
-                # Supports 1-primary + N-wrist layouts (e.g. 1 head + 2 wrists).
-                T = len(prim_t0)
-                num_wrist = len(wrist_t0) // T if T > 0 else 0
-                if num_wrist > 0 and len(wrist_t0) == num_wrist * T:
-                    all_images = []
-                    for t in range(T):
-                        views = [prim_t0[t]] + [wrist_t0[t + k * T] for k in range(num_wrist)]
-                        all_images.append(torch.cat(views, dim=-1))  # (C, H, (1+num_wrist)*W)
-                else:
-                    all_images = prim_t0 + wrist_t0
+                if not view_sequences:
+                    raise ValueError("No valid video views were loaded")
+                sequence_lengths = {len(sequence) for sequence in view_sequences}
+                if len(sequence_lengths) != 1:
+                    raise ValueError(f"Video views have different temporal lengths: {sequence_lengths}")
+                num_frames = sequence_lengths.pop()
+                all_images = [
+                    torch.cat([sequence[time] for sequence in view_sequences], dim=-1)
+                    if len(view_sequences) > 1
+                    else view_sequences[0][time]
+                    for time in range(num_frames)
+                ]
                 
                 # Get language and action data
                 language = data[dataset.modality_keys["language"][0]][0]
@@ -1778,6 +1795,12 @@ class LeRobotMixtureDataset(Dataset):
                 for state_key in dataset.modality_keys["state"]:
                     state.append(data[state_key])
                 state = np.concatenate(state, axis=1).astype(np.float16)
+
+                tactile = None
+                tactile_keys = dataset.modality_keys.get("tactile", [])
+                if tactile_keys:
+                    tactile = np.concatenate([data[key] for key in tactile_keys], axis=1)
+                    tactile = tactile.astype(np.uint8, copy=False)
                 
 
                 n_state_dims = state.shape[-1]
@@ -1813,6 +1836,8 @@ class LeRobotMixtureDataset(Dataset):
                     action_mask=action_mask,
                     state_mask=state_mask,
                 )
+                if tactile is not None:
+                    out["tactile"] = tactile
                 return out
                 
             except Exception as e:

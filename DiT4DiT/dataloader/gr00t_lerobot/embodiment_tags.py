@@ -52,6 +52,9 @@ class EmbodimentTag(Enum):
     The Franka Emika Panda robot.
     """
 
+    UNITREE_G1_SONIC = "unitree_g1_sonic"
+    """Unitree G1 controlled through the 78-D SONIC action interface."""
+
 # Embodiment tag string: to projector index in the Action Expert Module
 EMBODIMENT_TAG_MAPPING = {
     EmbodimentTag.NEW_EMBODIMENT.value: 31,
@@ -61,6 +64,7 @@ EMBODIMENT_TAG_MAPPING = {
     EmbodimentTag.AGIBOT_GENIE1.value: 26,
     EmbodimentTag.GR1.value: 24,
     EmbodimentTag.FRANKA.value: 25,
+    EmbodimentTag.UNITREE_G1_SONIC.value: 11,
 }
 
 # Robot type to embodiment tag mapping
@@ -73,4 +77,5 @@ ROBOT_TYPE_TO_EMBODIMENT_TAG = {
     "custom_robot_config": EmbodimentTag.NEW_EMBODIMENT,
     "fourier_gr1_arms_waist": EmbodimentTag.GR1,
     "robotwin50": EmbodimentTag.NEW_EMBODIMENT,
+    "unitree_g1_sonic": EmbodimentTag.UNITREE_G1_SONIC,
 }

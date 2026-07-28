@@ -1,0 +1,126 @@
+run_id: sonic_jepa
+run_root_dir: results/Checkpoints
+seed: 42
+trackers: [jsonl, wandb]
+wandb_entity: wang-zih23
+wandb_project: dit4dit-tactile-jepa
+is_debug: false
+
+framework:
+  name: DiT4DiT
+  cosmos25:
+    base_model: nvidia/Cosmos-Predict2.5-2B
+    revision: diffusers/base/post-trained
+    local_files_only: true
+    torch_dtype: bfloat16
+    future_num_inference_steps: 1
+    future_loss_type: flow_matching
+    extract_layer: 17
+    attn_implementation: flash_attention_2
+    vl_hidden_dim: 2048
+    training: joint
+    flow_matching:
+      time_distribution: logit_normal
+      high_sigma_ratio: 0.05
+      high_sigma_min: 0.98
+    conditional_frame_timestep: 0.0001
+
+  action_model:
+    action_model_type: DiT-B
+    hidden_size: 2560
+    add_pos_embed: true
+    max_seq_len: 1024
+    action_dim: 78
+    state_dim: 46
+    future_action_window_size: 39
+    action_horizon: 40
+    past_action_window_size: 0
+    noise_beta_alpha: 1.5
+    noise_beta_beta: 1.0
+    noise_s: 0.999
+    num_timestep_buckets: 1000
+    num_inference_timesteps: 4
+    num_target_vision_tokens: 32
+
+    tactile_mode: dream
+    tactile_encoder_type: mlp
+    n_tactile_tokens: 8
+    tactile_hidden_dim: 512
+    tactile_num_heads: 8
+    dream_horizon: 4
+    vision_horizon: 4
+    dream_hidden_dim: 1024
+    dream_state: true
+    dream_vision: true
+    vision_target_dim: 16
+    ema_decay: 0.999
+    tactile_dream_beta: 1.0
+    lambda_tactile: 0.5
+    lambda_state: 0.5
+    lambda_vision: 0.5
+
+    diffusion_model_cfg:
+      cross_attention_dim: 2048
+      dropout: 0.2
+      final_dropout: true
+      interleave_self_attention: true
+      norm_type: ada_norm
+      num_layers: 16
+      output_dim: 2560
+      positional_embeddings: null
+
+datasets:
+  vla_data:
+    dataset_py: lerobot_datasets
+    data_root_dir: /root/Projects/data
+    data_mix: carry_bucket_stereo
+    lerobot_version: v2.0
+    action_mode: abs
+    include_state: true
+    default_image_resolution: [3, 224, 224]
+    per_device_batch_size: 1
+    load_all_data_for_training: true
+    image_size: [224, 224]
+    video_backend: torchvision_av
+    delete_pause_frame: false
+    video_delta_indices: [0, 1, 2, 3, 4]
+    action_video_freq_ratio: 1
+    max_state_dim: 46
+    max_action_dim: 78
+    tactile_mode: dream
+    dream_horizon: 4
+    dream_state: true
+    dream_vision: true
+    vision_horizon: 4
+
+trainer:
+  epochs: 100
+  max_train_steps: 20000
+  num_warmup_steps: 1000
+  save_interval: 10000
+  eval_interval: 1000
+  repeated_diffusion_steps: 1
+  learning_rate:
+    base: 1.0e-05
+    backbone_interface: 1.0e-05
+    action_model: 1.0e-04
+  lr_scheduler_type: cosine_with_min_lr
+  scheduler_specific_kwargs:
+    min_lr: 5.0e-07
+  loss_scale:
+    future_video: 1.0
+  freeze_modules: ""
+  max_grad_norm: 1.0
+  weight_decay: 0.0
+  logging_frequency: 10
+  gradient_clipping: 1.0
+  gradient_accumulation_steps: 1
+  optimizer:
+    name: AdamW
+    betas: [0.9, 0.95]
+    eps: 1.0e-08
+    weight_decay: 1.0e-08
+  is_resume: false
+  pretrained_checkpoint: null
+  enable_gradient_checkpointing: true
+  enable_mixed_precision_training: true

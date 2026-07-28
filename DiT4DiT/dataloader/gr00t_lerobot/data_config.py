@@ -6,6 +6,7 @@
 from abc import ABC, abstractmethod
 
 from DiT4DiT.dataloader.gr00t_lerobot.datasets import ModalityConfig
+from DiT4DiT.dataloader.gr00t_lerobot.embodiment_tags import EmbodimentTag
 from DiT4DiT.dataloader.gr00t_lerobot.transform.base import ComposedModalityTransform, ModalityTransform
 from DiT4DiT.dataloader.gr00t_lerobot.transform.concat import ConcatTransform
 from DiT4DiT.dataloader.gr00t_lerobot.transform.state_action import (
@@ -1071,6 +1072,88 @@ class UnitreeG1AlohaFullBodyDataConfig(UnitreeG1DataConfig):
     action_indices = list(range(50))
 
 
+###########################################################################################
+
+
+class UnitreeG1SonicDataConfig:
+    """LeRobot contract for stereo Unitree G1 SONIC datasets."""
+
+    embodiment_tag = EmbodimentTag.UNITREE_G1_SONIC
+    video_keys = ["video.ego_view_left", "video.ego_view_right"]
+    tactile_keys = ["tactile.tactile_raw"]
+    state_keys = [
+        "state.left_leg",
+        "state.right_leg",
+        "state.waist",
+        "state.left_arm",
+        "state.right_arm",
+        "state.left_hand",
+        "state.right_hand",
+        "state.projected_gravity",
+    ]
+    action_keys = [
+        "action.motion_token",
+        "action.left_hand_joints",
+        "action.right_hand_joints",
+    ]
+    language_keys = ["annotation.human.task_description"]
+    action_indices = list(range(40))
+
+    def modality_config(self):
+        return self.modality_config_for({})
+
+    def modality_config_for(self, data_cfg):
+        tactile_mode = str(data_cfg.get("tactile_mode", "notac")).lower()
+        if tactile_mode not in {"notac", "input", "dream"}:
+            raise ValueError(f"Unknown tactile_mode {tactile_mode!r}")
+        dream_horizon = int(data_cfg.get("dream_horizon", 4))
+        vision_horizon = int(data_cfg.get("vision_horizon", dream_horizon))
+        dream_state = tactile_mode == "dream" and bool(data_cfg.get("dream_state", False))
+        dream_vision = tactile_mode == "dream" and bool(data_cfg.get("dream_vision", False))
+        configured_video = data_cfg.get("video_delta_indices", None)
+        if configured_video is None:
+            video_indices = list(range(vision_horizon + 1)) if dream_vision else [0]
+        else:
+            video_indices = list(configured_video)
+        if dream_vision and len(video_indices) < vision_horizon + 1:
+            raise ValueError(
+                f"vision-JEPA requires at least {vision_horizon + 1} video frames, got {video_indices}"
+            )
+
+        configs = {
+            "video": ModalityConfig(delta_indices=video_indices, modality_keys=self.video_keys),
+            "state": ModalityConfig(
+                delta_indices=list(range(dream_horizon + 1)) if dream_state else [0],
+                modality_keys=self.state_keys,
+            ),
+            "action": ModalityConfig(
+                delta_indices=self.action_indices,
+                modality_keys=self.action_keys,
+            ),
+            "language": ModalityConfig(delta_indices=[0], modality_keys=self.language_keys),
+        }
+        if tactile_mode != "notac":
+            configs["tactile"] = ModalityConfig(
+                delta_indices=list(range(dream_horizon + 1)) if tactile_mode == "dream" else [0],
+                modality_keys=self.tactile_keys,
+            )
+        return configs
+
+    def transform(self):
+        transforms = [
+            StateActionToTensor(apply_to=self.state_keys),
+            StateActionTransform(
+                apply_to=self.state_keys,
+                normalization_modes={key: "q99" for key in self.state_keys},
+            ),
+            StateActionToTensor(apply_to=self.action_keys),
+            StateActionTransform(
+                apply_to=self.action_keys,
+                normalization_modes={key: "q99" for key in self.action_keys},
+            ),
+        ]
+        return ComposedModalityTransform(transforms=transforms)
+
 
 ROBOT_TYPE_CONFIG_MAP = {
     "libero_franka": Libero4in1DataConfig(),
@@ -1086,5 +1169,5 @@ ROBOT_TYPE_CONFIG_MAP = {
     "custom_robot_config": SingleFrankaRobotiqDeltaEefDataConfig(),
     "g1_body29_aloha_arms_only": UnitreeG1AlohaOnlyArmsDataConfig(),
     "g1_body29_aloha_full_body": UnitreeG1AlohaFullBodyDataConfig(),
+    "unitree_g1_sonic": UnitreeG1SonicDataConfig(),
 }
-

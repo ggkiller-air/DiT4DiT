@@ -30,6 +30,7 @@ logger = initialize_overwatch(__name__)
 IGNORE_INDEX = -100
 
 from DiT4DiT.model.framework.base_framework import baseframework
+from DiT4DiT.model.framework.dit4dit_jepa import DiT4DiTJEPAFrameworkMixin
 from DiT4DiT.model.modules.vlm import get_backbone_model
 from DiT4DiT.model.modules.action_model.ActionDiT import get_action_model, FlowmatchingActionHead
 from DiT4DiT.training.trainer_utils.trainer_tools import resize_images
@@ -37,7 +38,7 @@ from DiT4DiT.model.tools import FRAMEWORK_REGISTRY
 
 
 @FRAMEWORK_REGISTRY.register("DiT4DiT")
-class DiT4DiT(baseframework):
+class DiT4DiT(DiT4DiTJEPAFrameworkMixin, baseframework):
     """
     Multimodal vision-language-action model.
 
@@ -92,6 +93,7 @@ class DiT4DiT(baseframework):
             self.future_action_window_size = config.framework.action_model.future_action_window_size
             self.past_action_window_size = config.framework.action_model.past_action_window_size
             self.chunk_len = self.past_action_window_size + 1 + self.future_action_window_size
+            self._init_dit4dit_jepa()
         else:
             # Video-only mode: skip action model entirely
             self.action_model = None
@@ -139,35 +141,15 @@ class DiT4DiT(baseframework):
                 )
             return {"future_video_loss": future_video_loss}
 
-        actions = [example["action"] for example in examples]  # label [B， len, 7]
-        state = [example["state"] for example in examples] if "state" in examples[0] else None  # [B, 1, state_dim]
-        action_mask = [example["action_mask"] for example in examples]  # [B, len, action_dim]
-
-        # Step 4: Action Expert Forward and Loss
-        with torch.autocast("cuda", dtype=torch.float32):
-            actions = torch.tensor(
-                np.array(actions), device=last_hidden.device, dtype=last_hidden.dtype
-            )  # [B, T_full, action_dim]
-            actions_target = actions[:, -(self.future_action_window_size+1):, :]  # (B, chunk_len, action_dim)
-
-            repeated_diffusion_steps = (
-                self.config.trainer.get("repeated_diffusion_steps", 4) if self.config and self.config.trainer else 4
+        future_vision_target = None
+        if self.action_model.dream_vision:
+            future_vision_target = self._encode_future_vision_targets(
+                backbone_inputs,
+                dtype=last_hidden.dtype,
             )
-            actions_target_repeated = actions_target.repeat(repeated_diffusion_steps, 1, 1)
-            last_hidden_repeated = last_hidden.repeat(repeated_diffusion_steps, 1, 1)
-            action_mask = torch.from_numpy(np.stack(action_mask)).to(last_hidden.device)
-            action_mask = action_mask.repeat(repeated_diffusion_steps, 1, 1)
-            ###no state
-            state_repeated = None
-            if state is not None:
-                state = torch.tensor(
-                    np.array(state), device=last_hidden.device, dtype=last_hidden.dtype
-                )
-                state_repeated = state.repeat(repeated_diffusion_steps, 1, 1)
 
-            action_loss = self.action_model(last_hidden_repeated, actions_target_repeated, action_mask, state_repeated)  # (B, chunk_len, action_dim)
-
-        out = {"action_loss": action_loss}
+        with torch.autocast("cuda", dtype=torch.float32):
+            out = self._forward_dit4dit_action(examples, last_hidden, future_vision_target)
         if future_video_loss is not None:
             out["future_video_loss"] = future_video_loss
         return out
@@ -198,10 +180,6 @@ class DiT4DiT(baseframework):
                 batch_images.append([img])
         instructions = [example["lang"] for example in examples]  # [B, str]
     
-        state = [example["state"] for example in examples] if "state" in examples[0] else None  # [B, 1, state_dim]
-        
-        train_obs_image_size = getattr(self.config.datasets.vla_data, "image_size", None)
-    
         # Step 1: backbone input format
         backbone_inputs = self.backbone_interface.build_cosmos_inputs(images=batch_images, instructions=instructions)
         with torch.autocast("cuda", dtype=torch.bfloat16):
@@ -215,14 +193,11 @@ class DiT4DiT(baseframework):
             # last_hidden_state: [B, seq_len, H]
             last_hidden = backbone_outputs.hidden_states[-1]   # [B, L, H]
 
-        state = torch.from_numpy(np.array(state)).to(last_hidden.device, dtype=last_hidden.dtype) if state is not None else None
-        
         # Step 4: Action Expert Forward
         with torch.autocast("cuda", dtype=torch.float32):
-            pred_actions = self.action_model.predict_action(last_hidden, state)  # (B, chunk_len, action_dim)
+            pred_actions = self._predict_dit4dit_action(examples, last_hidden)
 
         normalized_actions = pred_actions.detach().cpu().numpy()
         return {"normalized_actions": normalized_actions}
-
 
 

@@ -34,7 +34,10 @@ def make_LeRobotSingleDataset(
     """
     
     data_config = ROBOT_TYPE_CONFIG_MAP[robot_type]
-    modality_config = data_config.modality_config()
+    if hasattr(data_config, "modality_config_for"):
+        modality_config = data_config.modality_config_for(data_cfg or {})
+    else:
+        modality_config = data_config.modality_config()
     transforms = data_config.transform()
     dataset_path = data_root_dir / data_name
     if robot_type not in ROBOT_TYPE_TO_EMBODIMENT_TAG:
@@ -93,5 +96,4 @@ def get_vla_dataset(
         data_cfg=data_cfg,
         **kwargs,
     )
-
 

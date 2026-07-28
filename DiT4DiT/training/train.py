@@ -39,11 +39,6 @@ from DiT4DiT.training.trainer_utils.config_tracker import wrap_config, AccessTra
 
 # 强制绑定设备，消除警告
 # torch.cuda.set_device(local_rank)
-deepspeed_plugin = DeepSpeedPlugin(hf_ds_config="DiT4DiT/config/deepseeds/ds_config.yaml")
-# deepspeed_plugin = DeepSpeedPlugin()
-accelerator = Accelerator(deepspeed_plugin=deepspeed_plugin)
-accelerator.print(accelerator.state)
-
 # Sane Defaults
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -52,6 +47,18 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 from accelerate.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+def build_accelerator(cfg):
+    gradient_accumulation_steps = int(cfg.trainer.get("gradient_accumulation_steps", 1))
+    accelerator = Accelerator(
+        deepspeed_plugin=DeepSpeedPlugin(
+            hf_ds_config="DiT4DiT/config/deepseeds/ds_config.yaml"
+        ),
+        gradient_accumulation_steps=gradient_accumulation_steps,
+    )
+    accelerator.print(accelerator.state)
+    return accelerator
 
 
 def load_fast_tokenizer():
@@ -152,8 +159,15 @@ class VLATrainer(TrainerUtils):
         seed = self.config.seed + rank if hasattr(self.config, "seed") else rank + 3047
         set_seed(seed)
 
+        self._save_resolved_config(Path(self.config.output_dir) / "config.yaml")
+
         # load pretrained weights
         self._init_checkpointing()
+        if getattr(self, "_sync_jepa_teachers_after_load", False) and hasattr(
+            self.model, "sync_jepa_teachers"
+        ):
+            self.model.sync_jepa_teachers()
+            logger.info("Synchronized JEPA teachers from checkpoint-loaded online encoders")
 
         # 根据  resume 调整 lr_scheduler
         self._adjust_lr_scheduler_for_resume()
@@ -223,6 +237,12 @@ class VLATrainer(TrainerUtils):
 
         self._init_wandb()
 
+    def _save_resolved_config(self, path):
+        if not self.accelerator.is_main_process:
+            return
+        config = self.config.unwrap() if isinstance(self.config, AccessTrackedConfig) else self.config
+        OmegaConf.save(config, path, resolve=True)
+
 
     def _adjust_lr_scheduler_for_resume(self):
         """根据已完成的步数调整学习率调度器状态"""
@@ -267,6 +287,7 @@ class VLATrainer(TrainerUtils):
         pretrained_checkpoint = getattr(self.config.trainer, "pretrained_checkpoint", None)
         is_resume = getattr(self.config.trainer, "is_resume", False)
         self.resume_from_checkpoint = pretrained_checkpoint
+        self._sync_jepa_teachers_after_load = False
         if is_resume:
             # 恢复训练状态
             resume_from_checkpoint, self.completed_steps = self._get_latest_checkpoint(self.checkpoint_dir)
@@ -274,6 +295,9 @@ class VLATrainer(TrainerUtils):
             if resume_from_checkpoint:
                 self.resume_from_checkpoint = resume_from_checkpoint
                 self.model = self.load_pretrained_backbones(self.model, self.resume_from_checkpoint, reload_modules=None)
+                self._sync_jepa_teachers_after_load = bool(
+                    getattr(self.model, "_jepa_teacher_keys_missing", False)
+                )
                 logger.info(f"Resuming training from checkpoint: {self.resume_from_checkpoint}, steps: {self.completed_steps}")
                 return None
             else:
@@ -284,6 +308,9 @@ class VLATrainer(TrainerUtils):
         if pretrained_checkpoint:
             reload_modules = getattr(self.config.trainer, "reload_modules", None)
             self.model = self.load_pretrained_backbones(self.model, pretrained_checkpoint, reload_modules=reload_modules)
+            self._sync_jepa_teachers_after_load = bool(
+                getattr(self.model, "_jepa_teacher_keys_missing", False)
+            )
             self.completed_steps = 0
             self.resume_from_checkpoint = pretrained_checkpoint
             logger.info(f"Loaded pretrained checkpoint: {pretrained_checkpoint}, steps: {self.completed_steps}")
@@ -323,8 +350,8 @@ class VLATrainer(TrainerUtils):
                 #     use_original_values=False
                 # )
                 self.config.save_accessed_config(
-                    output_dir / "config.yaml", 
-                    use_original_values=False 
+                    output_dir / "config.accessed.yaml",
+                    use_original_values=False
                 )
                 logger.info("✅ Configuration files saved")
 
@@ -467,7 +494,7 @@ class VLATrainer(TrainerUtils):
             logger.info("***** Training Configuration *****")
             logger.info(f"  Total optimization steps = {self.config.trainer.max_train_steps}")
             logger.info(f"  Per device batch size = {self.config.datasets.vla_data.per_device_batch_size}")
-            logger.info(f"  Gradient accumulation steps = {self.config.trainer.gradient_accumulation_steps}")
+            logger.info(f"  Gradient accumulation steps = {self.accelerator.gradient_accumulation_steps}")
             logger.info(f"  Total batch size = {self.total_batch_size}")
             logger.info(f"  len(vla_train_dataloader) = {len(self.vla_train_dataloader)}")
             logger.info(f"  len(vla_train_dataloader.dataset) = {len(self.vla_train_dataloader.dataset)}")
@@ -485,6 +512,7 @@ class VLATrainer(TrainerUtils):
 
                     action_loss = output_dict.get("action_loss", None)
                     future_video_loss = output_dict.get("future_video_loss", None)
+                    unwrapped_model = self.accelerator.unwrap_model(self.model)
 
                     # Validate at least one loss exists
                     if action_loss is None and future_video_loss is None:
@@ -524,6 +552,15 @@ class VLATrainer(TrainerUtils):
                         # video only
                         total_loss = future_video_loss_scaled
 
+                    loss_weights = (
+                        unwrapped_model.jepa_loss_weights()
+                        if hasattr(unwrapped_model, "jepa_loss_weights")
+                        else {}
+                    )
+                    for loss_name, weight in loss_weights.items():
+                        if loss_name in output_dict:
+                            total_loss = total_loss + float(weight) * output_dict[loss_name]
+
                     # VLA backward propagation (keep inside enable_grad scope)
                     self.accelerator.backward(total_loss)
 
@@ -535,7 +572,13 @@ class VLATrainer(TrainerUtils):
 
                 # optimizer step
                 self.optimizer.step()
-                self.lr_scheduler.step()
+                optimizer_step_succeeded = not getattr(
+                    self.accelerator, "optimizer_step_was_skipped", False
+                )
+                if optimizer_step_succeeded:
+                    self.lr_scheduler.step()
+                    if hasattr(unwrapped_model, "update_jepa_teachers"):
+                        unwrapped_model.update_jepa_teachers()
                 self.optimizer.zero_grad(set_to_none=True)
 
         step_metrics = {}
@@ -550,6 +593,9 @@ class VLATrainer(TrainerUtils):
                 if torch.is_tensor(future_video_loss_scaled)
                 else float(future_video_loss_scaled)
             )
+        for loss_name in ("tactile_loss", "state_jepa_loss", "vision_jepa_loss"):
+            if loss_name in output_dict:
+                step_metrics[loss_name] = output_dict[loss_name].item()
         # total loss (for quick monitoring only)
         step_metrics["total_loss"] = total_loss.item() if torch.is_tensor(total_loss) else float(total_loss)
         return step_metrics
@@ -562,6 +608,7 @@ class VLATrainer(TrainerUtils):
             os.makedirs(final_checkpoint, exist_ok=True)
             state_dict = self.accelerator.get_state_dict(self.model)
             torch.save(state_dict, os.path.join(final_checkpoint, "pytorch_model.pt"))
+            self._save_resolved_config(Path(final_checkpoint) / "config.yaml")
             logger.info(f"Training complete. Final model saved at {final_checkpoint}")
 
 
@@ -574,6 +621,8 @@ class VLATrainer(TrainerUtils):
 
 def main(cfg) -> None:
     logger.info("VLA Training :: Warming Up")
+
+    accelerator = build_accelerator(cfg)
 
     #  Wrap config to enable access tracking
     cfg = wrap_config(cfg)
