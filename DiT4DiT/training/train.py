@@ -52,9 +52,7 @@ logger = get_logger(__name__)
 def build_accelerator(cfg):
     gradient_accumulation_steps = int(cfg.trainer.get("gradient_accumulation_steps", 1))
     accelerator = Accelerator(
-        deepspeed_plugin=DeepSpeedPlugin(
-            hf_ds_config="DiT4DiT/config/deepseeds/ds_config.yaml"
-        ),
+        deepspeed_plugin=DeepSpeedPlugin(),
         gradient_accumulation_steps=gradient_accumulation_steps,
     )
     accelerator.print(accelerator.state)

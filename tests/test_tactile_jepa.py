@@ -85,6 +85,15 @@ def test_sonic_layout_and_single_normalization():
     assert torch.equal(normalized[1], torch.ones_like(normalized[1]))
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for a cross-device buffer")
+def test_tactile_channel_index_follows_the_input_device():
+    encoder = TactileEncoder(embed_dim=16, hidden_dim=8, num_tokens=2, num_heads=2)
+    encoder.valid_idx = encoder.valid_idx.cuda()
+    raw = torch.zeros(1, RAW_DIM)
+    normalized = encoder.select_and_normalize(raw)
+    assert normalized.device == raw.device
+
+
 @pytest.mark.parametrize("encoder_type", ["mlp", "cnn", "coord"])
 def test_tactile_encoder_variants_shape_and_backward(encoder_type):
     encoder = TactileEncoder(

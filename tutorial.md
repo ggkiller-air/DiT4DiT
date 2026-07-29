@@ -42,43 +42,33 @@ entity/project in all three YAMLs when running elsewhere.
 approved on that model page; HTTP 403 means access has not been granted, not an environment
 or proxy failure. After approval, run the download command above once before training.
 
-## Training
+## Full training
 
-Check `nvidia-smi` first. The following two-GPU, two-step commands are environment checks,
-not full experiments:
+DiT4DiT requires BF16 ZeRO-3 for full joint Cosmos and action-model training on four A800
+80GB GPUs. The fixed configs run 20k steps, save at 10k and 20k, and use the measured safe
+batch of 1 per GPU (global batch 4).
 
 ```bash
 cd /root/Projects/DiT4DiT
 source .venv/bin/activate
-export CUDA_VISIBLE_DEVICES=2,3
-export WANDB_MODE=disabled
+export CUDA_VISIBLE_DEVICES=0,1,2,3
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-COMMON=(
-  --trainer.max_train_steps 2
-  --trainer.save_interval 2
-  --trainer.num_warmup_steps 0
-  --datasets.vla_data.per_device_batch_size 1
-)
+accelerate launch --config_file DiT4DiT/config/deepseeds/deepspeed_zero3.yaml \
+  --num_processes 4 DiT4DiT/training/train.py \
+  --config_yaml DiT4DiT/config/real_robot/dit4dit_g1_sonic_notactile.yaml
 
-accelerate launch --config_file DiT4DiT/config/deepseeds/deepspeed_zero2.yaml \
-  --num_processes 2 DiT4DiT/training/train.py \
-  --config_yaml DiT4DiT/config/real_robot/dit4dit_g1_sonic_notactile.yaml \
-  --run_id sonic_notactile_smoke "${COMMON[@]}"
+accelerate launch --config_file DiT4DiT/config/deepseeds/deepspeed_zero3.yaml \
+  --num_processes 4 DiT4DiT/training/train.py \
+  --config_yaml DiT4DiT/config/real_robot/dit4dit_g1_sonic_htd.yaml
 
-accelerate launch --config_file DiT4DiT/config/deepseeds/deepspeed_zero2.yaml \
-  --num_processes 2 DiT4DiT/training/train.py \
-  --config_yaml DiT4DiT/config/real_robot/dit4dit_g1_sonic_htd.yaml \
-  --run_id sonic_htd_smoke "${COMMON[@]}"
-
-accelerate launch --config_file DiT4DiT/config/deepseeds/deepspeed_zero2.yaml \
-  --num_processes 2 DiT4DiT/training/train.py \
-  --config_yaml DiT4DiT/config/real_robot/dit4dit_g1_sonic_jepa.yaml \
-  --run_id sonic_jepa_smoke "${COMMON[@]}"
+accelerate launch --config_file DiT4DiT/config/deepseeds/deepspeed_zero3.yaml \
+  --num_processes 4 DiT4DiT/training/train.py \
+  --config_yaml DiT4DiT/config/real_robot/dit4dit_g1_sonic_jepa.yaml
 ```
 
-For a real experiment, remove `COMMON`, keep the config's 20k steps, and choose a unique
-`run_id`. Training writes resumable states to
-`results/Checkpoints/<run_id>/checkpoints/steps_<N>/`. The directly serveable checkpoint is
+Training writes resumable states to `results/Checkpoints/<run_id>/checkpoints/steps_<N>/`.
+The directly serveable checkpoint is
 `results/Checkpoints/<run_id>/final_model/pytorch_model.pt`; its sibling run directory also
 contains `config.yaml` and `dataset_statistics.json`.
 

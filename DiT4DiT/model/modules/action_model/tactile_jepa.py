@@ -271,7 +271,8 @@ class TactileEncoder(nn.Module):
     def select_and_normalize(self, raw: torch.Tensor) -> torch.Tensor:
         if raw.shape[-1] != self.raw_dim:
             raise ValueError(f"Expected tactile width {self.raw_dim}, got {raw.shape}")
-        return raw.index_select(-1, self.valid_idx).to(self.aggregator.norm.weight.dtype) / 255.0
+        valid_idx = self.valid_idx.to(device=raw.device)
+        return raw.index_select(-1, valid_idx).to(self.aggregator.norm.weight.dtype) / 255.0
 
     def forward(self, raw: torch.Tensor) -> torch.Tensor:
         return self.aggregator(self.per_region(self.select_and_normalize(raw)))
