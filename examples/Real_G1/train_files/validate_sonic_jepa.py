@@ -65,6 +65,9 @@ def main() -> None:
         "state": (5, 46),
         "state_mask": (5, 46),
         "tactile": (5, 256),
+        "tactile_future_mask": (4,),
+        "state_future_mask": (4,),
+        "vision_future_mask": (4,),
     }
     for key, expected in expected_shapes.items():
         actual = tuple(example[key].shape)

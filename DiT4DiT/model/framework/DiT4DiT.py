@@ -117,6 +117,15 @@ class DiT4DiT(DiT4DiTJEPAFrameworkMixin, baseframework):
         # All video frames (condition + future) are already in batch_images;
         # build_cosmos_inputs splits them into videos (cond) and future_videos internally.
         backbone_inputs = self.backbone_interface.build_cosmos_inputs(images=batch_images, instructions=instructions)
+        if backbone_inputs.get("future_videos") is not None:
+            has_future_masks = ["vision_future_mask" in example for example in examples]
+            if any(has_future_masks):
+                if not all(has_future_masks):
+                    raise ValueError("vision_future_mask must be present for every sample in a batch")
+                backbone_inputs["future_video_mask"] = torch.as_tensor(
+                    np.asarray([example["vision_future_mask"] for example in examples]),
+                    dtype=torch.bool,
+                )
         with torch.autocast("cuda", dtype=torch.bfloat16):
             backbone_outputs = self.backbone_interface(
                 **backbone_inputs,
@@ -199,5 +208,3 @@ class DiT4DiT(DiT4DiTJEPAFrameworkMixin, baseframework):
 
         normalized_actions = pred_actions.detach().cpu().numpy()
         return {"normalized_actions": normalized_actions}
-
-

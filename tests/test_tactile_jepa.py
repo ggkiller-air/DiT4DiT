@@ -13,6 +13,7 @@ from DiT4DiT.model.modules.action_model.tactile_jepa import (
     TactileEncoder,
     build_ema_teacher,
     ema_update,
+    jepa_loss,
 )
 
 
@@ -118,6 +119,39 @@ def test_ema_teacher_is_frozen_and_moves_toward_student():
     assert torch.allclose(after, 0.5 * before + 0.5 * next(student.parameters()))
 
 
+def test_jepa_loss_ignores_episode_padding():
+    prediction = torch.tensor([[[1.0, 0.0], [0.0, 1.0]]])
+    first_target = torch.tensor([[[1.0, 0.0], [1.0, 0.0]]])
+    second_target = first_target.clone()
+    second_target[:, 1] = torch.tensor([-10.0, 7.0])
+    mask = torch.tensor([[True, False]])
+    assert torch.equal(
+        jepa_loss(prediction, first_target, mask=mask),
+        jepa_loss(prediction, second_target, mask=mask),
+    )
+    assert jepa_loss(prediction, second_target, mask=torch.zeros_like(mask)) == 0
+
+
+def test_action_horizon_must_match_training_window():
+    config = _action_config()
+    config.framework.action_model.action_horizon = 5
+    with pytest.raises(ValueError, match="future_action_window_size"):
+        FlowmatchingActionHead(config)
+
+
+def test_padded_action_values_cannot_change_valid_action_loss():
+    model = FlowmatchingActionHead(_action_config())
+    vl, actions, mask, state = _action_inputs()
+    mask[:, -1] = 0
+    changed = actions.clone()
+    changed[:, -1] = 1000
+    torch.manual_seed(456)
+    first = model(vl, actions, mask, state=state)
+    torch.manual_seed(456)
+    second = model(vl, changed, mask, state=state)
+    assert torch.equal(first, second)
+
+
 def test_notac_keeps_scalar_action_loss():
     model = FlowmatchingActionHead(_action_config())
     vl, actions, mask, state = _action_inputs()
@@ -189,3 +223,35 @@ def test_future_vision_target_cannot_change_action_loss_with_fixed_rng():
 
     assert torch.equal(first["action_loss"], second["action_loss"])
     assert not torch.equal(first["vision_jepa_loss"], second["vision_jepa_loss"])
+
+
+def test_future_tactile_and_state_cannot_change_action_loss_with_fixed_rng():
+    model = FlowmatchingActionHead(_action_config("dream", dream_state=True))
+    vl, actions, mask, state = _action_inputs()
+    tactile = torch.randint(0, 256, (2, 3, RAW_DIM), dtype=torch.uint8)
+    future_state = torch.randn(2, 2, 5)
+
+    torch.manual_seed(321)
+    first = model(
+        vl,
+        actions,
+        mask,
+        state=state,
+        tactile=tactile,
+        future_state=future_state,
+    )
+    changed_tactile = tactile.clone()
+    changed_tactile[:, 1:] = 255 - changed_tactile[:, 1:]
+    torch.manual_seed(321)
+    second = model(
+        vl,
+        actions,
+        mask,
+        state=state,
+        tactile=changed_tactile,
+        future_state=future_state + 10.0,
+    )
+
+    assert torch.equal(first["action_loss"], second["action_loss"])
+    assert not torch.equal(first["tactile_loss"], second["tactile_loss"])
+    assert not torch.equal(first["state_jepa_loss"], second["state_jepa_loss"])

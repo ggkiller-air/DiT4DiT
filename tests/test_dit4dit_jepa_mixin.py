@@ -239,6 +239,7 @@ def test_future_ground_truth_cannot_change_action_conditioning():
                 "lang": "task",
                 "action": np.zeros((2, 2), dtype=np.float32),
                 "action_mask": np.ones((2, 2), dtype=np.float32),
+                "vision_future_mask": np.ones(2, dtype=bool),
             }
         ]
 

@@ -152,6 +152,15 @@ class DiT4DiTJEPAFrameworkMixin:
         tactile = self._tensorize_optional(examples, "tactile", device, dtype)
         if self.action_model.use_tactile and tactile is None:
             raise ValueError("Active tactile mode requires the tactile key in every sample")
+        tactile_future_mask = self._tensorize_optional(
+            examples, "tactile_future_mask", device, dtype
+        )
+        state_future_mask = self._tensorize_optional(
+            examples, "state_future_mask", device, dtype
+        )
+        vision_future_mask = self._tensorize_optional(
+            examples, "vision_future_mask", device, dtype
+        )
 
         def repeat(value):
             return None if value is None else value.repeat(repeats, *([1] * (value.ndim - 1)))
@@ -164,6 +173,9 @@ class DiT4DiTJEPAFrameworkMixin:
             tactile=repeat(tactile),
             future_state=repeat(future_state),
             future_vision_target=repeat(future_vision_target),
+            tactile_future_mask=repeat(tactile_future_mask),
+            state_future_mask=repeat(state_future_mask),
+            vision_future_mask=repeat(vision_future_mask),
         )
         return {"action_loss": output} if torch.is_tensor(output) else output
 

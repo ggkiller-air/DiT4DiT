@@ -1832,6 +1832,25 @@ class LeRobotMixtureDataset(Dataset):
                 action_mask = np.zeros((n_action_tokens, max_action_dim), dtype=bool)
                 action_mask[:, :n_action_dims] = True
 
+                trajectory_index = dataset.get_trajectory_index(trajectory_id)
+                trajectory_length = int(dataset.trajectory_lengths[trajectory_index])
+
+                def _time_mask(modality: str) -> np.ndarray | None:
+                    keys = dataset.modality_keys.get(modality, [])
+                    if not keys:
+                        return None
+                    deltas = np.asarray(dataset.delta_indices[keys[0]], dtype=np.int64)
+                    indices = int(step) + deltas
+                    return np.logical_and(indices >= 0, indices < trajectory_length)
+
+                action_time_mask = _time_mask("action")
+                if action_time_mask is None or action_time_mask.shape != (n_action_tokens,):
+                    shape = None if action_time_mask is None else action_time_mask.shape
+                    raise ValueError(
+                        f"Action time mask must have shape {(n_action_tokens,)}, got {shape}"
+                    )
+                action_mask &= action_time_mask[:, None]
+
                 out = dict(
                     action=action,
                     image=all_images,
@@ -1842,6 +1861,19 @@ class LeRobotMixtureDataset(Dataset):
                 )
                 if tactile is not None:
                     out["tactile"] = tactile
+                    tactile_time_mask = _time_mask("tactile")
+                    if tactile_time_mask is not None and tactile_time_mask.size > 1:
+                        out["tactile_future_mask"] = tactile_time_mask[1:]
+                state_time_mask = _time_mask("state")
+                if state_time_mask is not None and state_time_mask.size > 1:
+                    out["state_future_mask"] = state_time_mask[1:]
+                vision_time_mask = _time_mask("video")
+                dream_vision = bool(self.data_cfg.get("dream_vision", False))
+                if dream_vision and vision_time_mask is not None and vision_time_mask.size > 1:
+                    ratio = int(self.data_cfg.get("action_video_freq_ratio", 1))
+                    if ratio != 1:
+                        raise ValueError("Future-vision masks require action_video_freq_ratio=1")
+                    out["vision_future_mask"] = vision_time_mask[1:]
                 return out
                 
             except Exception as e:

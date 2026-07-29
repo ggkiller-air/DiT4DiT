@@ -14,6 +14,11 @@ from DiT4DiT.model.modules.action_model.tactile_jepa import REGION_GRIDS, REGION
 
 DATASET_PATH = Path("/root/Projects/data/carry-bucket-stereo")
 RECOMMENDED_CONFIG = Path("DiT4DiT/config/real_robot/dit4dit_g1_sonic_jepa.yaml")
+MODE_CONFIGS = {
+    "notactile": Path("DiT4DiT/config/real_robot/dit4dit_g1_sonic_notactile.yaml"),
+    "htd": Path("DiT4DiT/config/real_robot/dit4dit_g1_sonic_htd.yaml"),
+    "jepa": RECOMMENDED_CONFIG,
+}
 
 
 def _data_config(**overrides):
@@ -75,6 +80,34 @@ def test_recommended_config_pins_the_isaac_tactile_layout():
     assert configured_grids == REGION_GRIDS
 
 
+def test_fixed_mode_configs_share_sonic_contract_and_have_distinct_targets():
+    configs = {name: OmegaConf.load(path) for name, path in MODE_CONFIGS.items()}
+    for config in configs.values():
+        action = config.framework.action_model
+        data = config.datasets.vla_data
+        assert (action.state_dim, action.action_dim, action.action_horizon) == (46, 78, 40)
+        assert action.future_action_window_size == 39
+        assert (data.max_state_dim, data.max_action_dim) == (46, 78)
+        assert data.action_video_freq_ratio == 1
+
+    assert configs["notactile"].framework.action_model.tactile_mode == "notac"
+    assert configs["notactile"].datasets.vla_data.video_delta_indices == [0]
+
+    htd_model = configs["htd"].framework.action_model
+    htd_data = configs["htd"].datasets.vla_data
+    assert htd_model.tactile_mode == htd_data.tactile_mode == "dream"
+    assert not htd_model.dream_state and not htd_model.dream_vision
+    assert not htd_data.dream_state and not htd_data.dream_vision
+    assert htd_data.video_delta_indices == [0]
+
+    jepa_model = configs["jepa"].framework.action_model
+    jepa_data = configs["jepa"].datasets.vla_data
+    assert jepa_model.tactile_mode == jepa_data.tactile_mode == "dream"
+    assert jepa_model.dream_state and jepa_model.dream_vision
+    assert jepa_data.dream_state and jepa_data.dream_vision
+    assert jepa_data.video_delta_indices == list(range(5))
+
+
 @pytest.mark.skipif(not DATASET_PATH.exists(), reason="carry-bucket-stereo is not installed")
 def test_real_sonic_sample_and_episode_tail_padding():
     mixture = get_vla_dataset(_data_config(), mode="eval")
@@ -88,6 +121,10 @@ def test_real_sonic_sample_and_episode_tail_padding():
     assert sample["tactile"].dtype == np.uint8
     assert len(sample["image"]) == 5
     assert all(tuple(image.shape) == (3, 224, 448) for image in sample["image"])
+    assert sample["action_mask"].all()
+    assert sample["tactile_future_mask"].all()
+    assert sample["state_future_mask"].all()
+    assert sample["vision_future_mask"].all()
 
     raw = single.get_step_data(trajectory_id, 0)
 
@@ -107,3 +144,8 @@ def test_real_sonic_sample_and_episode_tail_padding():
     assert all(np.array_equal(tail["state"][0], value) for value in tail["state"][1:])
     current = tail["image"][0].numpy()
     assert all(np.array_equal(current, frame.numpy()) for frame in tail["image"][1:])
+    assert tail["action_mask"][0].all()
+    assert not tail["action_mask"][1:].any()
+    assert not tail["tactile_future_mask"].any()
+    assert not tail["state_future_mask"].any()
+    assert not tail["vision_future_mask"].any()

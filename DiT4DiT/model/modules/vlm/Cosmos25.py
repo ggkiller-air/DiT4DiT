@@ -503,6 +503,7 @@ class Cosmos25FeatureExtractor(nn.Module):
         detach: bool = True,
         num_frames_out: Optional[int] = None,
         gt_future_videos: Optional[torch.Tensor] = None,  # (B,Tf,3,H,W) float in [0,1]
+        gt_future_mask: Optional[torch.Tensor] = None,  # (B,Tf), true for real (not padded) frames
         return_pred_future_video: bool = False,
         fixed_seed: Optional[int] = None,
     ) -> torch.Tensor:
@@ -698,6 +699,23 @@ class Cosmos25FeatureExtractor(nn.Module):
                     else:
                         raise ValueError(f"gt_future_videos must be (B,T,3,H,W) or (B,3,T,H,W), got {tuple(gt.shape)}")
 
+                    if gt_future_mask is None:
+                        sample_mask = torch.ones(gt.shape[0], device=device, dtype=torch.float32)
+                    else:
+                        gt_future_mask = torch.as_tensor(gt_future_mask, device=device, dtype=torch.bool)
+                        if gt_future_mask.shape != gt.shape[:2]:
+                            raise ValueError(
+                                "gt_future_mask must match future video batch/time dimensions; "
+                                f"got {tuple(gt_future_mask.shape)} and {tuple(gt.shape[:2])}"
+                            )
+                        # Cosmos compresses time before its loss. Conservatively omit a sample from
+                        # native video supervision if any requested pixel frame was episode padding.
+                        sample_mask = gt_future_mask.all(dim=1).to(torch.float32)
+
+                    def masked_batch_mean(per_sample: torch.Tensor) -> torch.Tensor:
+                        weights = sample_mask.to(device=per_sample.device, dtype=per_sample.dtype)
+                        return (per_sample * weights).sum() / weights.sum().clamp_min(1.0)
+
                     # Loss type: pixel_l1 | pixel_mse | latent_mse | flow_matching (latent-space)
                     # `loss_type` is resolved above to allow skipping sampling/decode in flow-matching-only training.
                     loss_type = loss_type or "pixel_l1"
@@ -799,7 +817,10 @@ class Cosmos25FeatureExtractor(nn.Module):
                             v_tgt_future = (z_future - x0_future).to(device=v_pred.device, dtype=v_pred.dtype)
                             v_pred_future = v_pred[:, :, cond_count : cond_count + T_sup]
 
-                            future_loss = F.mse_loss(v_pred_future.float(), v_tgt_future.float())
+                            per_sample = F.mse_loss(
+                                v_pred_future.float(), v_tgt_future.float(), reduction="none"
+                            ).flatten(1).mean(dim=1)
+                            future_loss = masked_batch_mean(per_sample)
                             
                     elif loss_type == "latent_mse":
                         # Build full GT pixel video (B,3,T_in+T_f,H,W)
@@ -817,10 +838,12 @@ class Cosmos25FeatureExtractor(nn.Module):
                         if pred_latents_future.numel() == 0 or gt_latents_future.numel() == 0:
                             future_loss = torch.tensor(0.0, device=latents.device, dtype=latents.dtype)
                         else:
-                            future_loss = F.mse_loss(
+                            per_sample = F.mse_loss(
                                 pred_latents_future.float(),
                                 gt_latents_future.to(pred_latents_future.device, dtype=torch.float32),
-                            )
+                                reduction="none",
+                            ).flatten(1).mean(dim=1)
+                            future_loss = masked_batch_mean(per_sample)
                     else:
                         # Pixel supervision: only on future frames (skip t0)
                         if pred_video_full is None:
@@ -834,9 +857,12 @@ class Cosmos25FeatureExtractor(nn.Module):
                                 pred_future = pred_video_full[:, -tf:]
                             gt_pix = gt.to(pred_future.device, dtype=pred_future.dtype)
                             if loss_type in ("pixel_mse", "mse"):
-                                future_loss = F.mse_loss(pred_future, gt_pix)
+                                per_sample = F.mse_loss(
+                                    pred_future, gt_pix, reduction="none"
+                                ).flatten(1).mean(dim=1)
                             else:
-                                future_loss = torch.abs(pred_future - gt_pix).mean()
+                                per_sample = torch.abs(pred_future - gt_pix).flatten(1).mean(dim=1)
+                            future_loss = masked_batch_mean(per_sample)
 
             if detach:
                 hidden = hidden.detach()
@@ -1026,6 +1052,7 @@ class _Cosmos25_Interface(nn.Module):
         output_hidden_states: bool = True,
         return_dict: bool = True,
         future_videos: Optional[torch.Tensor] = None,
+        future_video_mask: Optional[torch.Tensor] = None,
         predict_future: bool = False,
         **kwargs,
     ):
@@ -1061,6 +1088,7 @@ class _Cosmos25_Interface(nn.Module):
                 width=width,
                 detach=True,
                 gt_future_videos=future_videos,
+                gt_future_mask=future_video_mask,
                 return_pred_future_video=False,
                 num_inference_steps=future_steps,
                 num_frames_out=train_num_frames_out,
@@ -1083,5 +1111,4 @@ class _Cosmos25_Interface(nn.Module):
         out = BackboneOutput(hidden_states=[bsd], future_video_loss=future_loss, pred_future_video=pred_future_video)
         # return out if return_dict else (out.hidden_states,)
         return out
-
 
