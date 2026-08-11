@@ -16,7 +16,7 @@ def observation():
         "ego_view_left": np.zeros((8, 10, 3), dtype=np.uint8),
         "ego_view_right": np.zeros((8, 10, 3), dtype=np.uint8),
         "prompt": "carry the bucket",
-        "tactile": np.zeros(256, dtype=np.uint8),
+        "tactile": np.zeros(768, dtype=np.uint8),
     }
 
 
@@ -63,7 +63,7 @@ class FakeDiTPolicy:
 
     @staticmethod
     def _check_unnorm_key(_norm_stats, unnorm_key):
-        return unnorm_key or "carry_bucket"
+        return unnorm_key or "desk_sweep"
 
     def predict_action(self, *, examples):
         self.example = examples[0]
@@ -83,7 +83,7 @@ def test_sonic_adapter_matches_dit4dit_training_inputs_and_output_stats():
         }
     }
     norm_stats = {
-        "carry_bucket": {
+        "desk_sweep": {
             "state": {"q01": [-2.0] * 46, "q99": [2.0] * 46},
             "action": {"q01": [-4.0] * 78, "q99": [4.0] * 78},
         }
@@ -92,7 +92,7 @@ def test_sonic_adapter_matches_dit4dit_training_inputs_and_output_stats():
         policy,
         model_config=config,
         norm_stats=norm_stats,
-        unnorm_key="carry_bucket",
+        unnorm_key="desk_sweep",
     )
     obs = observation()
     obs["state"].fill(1.0)

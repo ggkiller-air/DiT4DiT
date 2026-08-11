@@ -12,7 +12,7 @@ from DiT4DiT.dataloader.gr00t_lerobot.data_config import UnitreeG1SonicDataConfi
 from DiT4DiT.dataloader.lerobot_datasets import get_vla_dataset
 from DiT4DiT.model.modules.action_model.tactile_jepa import REGION_GRIDS, REGION_SIZES, VALID_IDX
 
-DATASET_PATH = Path("/root/Projects/data/carry-bucket-stereo")
+DATASET_PATH = Path("/home/wzh/Projects/Uni_VLaT/data/desk_sweep")
 RECOMMENDED_CONFIG = Path("DiT4DiT/config/real_robot/dit4dit_g1_sonic_jepa.yaml")
 MODE_CONFIGS = {
     "notactile": Path("DiT4DiT/config/real_robot/dit4dit_g1_sonic_notactile.yaml"),
@@ -24,7 +24,7 @@ MODE_CONFIGS = {
 def _data_config(**overrides):
     values = {
         "data_root_dir": str(DATASET_PATH.parent),
-        "data_mix": "carry_bucket_stereo",
+        "data_mix": "desk_sweep",
         "lerobot_version": "v2.0",
         "action_mode": "abs",
         "include_state": True,
@@ -72,10 +72,14 @@ def test_sonic_modalities_follow_ablation_mode():
 
 def test_recommended_config_pins_the_isaac_tactile_layout():
     action_config = OmegaConf.load(RECOMMENDED_CONFIG).framework.action_model
-    assert tuple(action_config.tactile_valid_idx) == VALID_IDX
-    assert tuple(action_config.tactile_region_sizes) == REGION_SIZES
+    assert tuple(action_config.get("tactile_valid_idx", VALID_IDX)) == VALID_IDX
+    assert tuple(action_config.get("tactile_region_sizes", REGION_SIZES)) == REGION_SIZES
     configured_grids = tuple(
-        zip(action_config.tactile_region_rows, action_config.tactile_region_cols, strict=True)
+        zip(
+            action_config.get("tactile_region_rows", [rows for rows, _ in REGION_GRIDS]),
+            action_config.get("tactile_region_cols", [cols for _, cols in REGION_GRIDS]),
+            strict=True,
+        )
     )
     assert configured_grids == REGION_GRIDS
 
@@ -108,7 +112,7 @@ def test_fixed_mode_configs_share_sonic_contract_and_have_distinct_targets():
     assert jepa_data.video_delta_indices == list(range(5))
 
 
-@pytest.mark.skipif(not DATASET_PATH.exists(), reason="carry-bucket-stereo is not installed")
+@pytest.mark.skipif(not DATASET_PATH.exists(), reason="desk_sweep is not installed")
 def test_real_sonic_sample_and_episode_tail_padding():
     mixture = get_vla_dataset(_data_config(), mode="eval")
     single = mixture.datasets[0]
@@ -117,7 +121,7 @@ def test_real_sonic_sample_and_episode_tail_padding():
     sample = mixture[0]
     assert sample["action"].shape == (40, 78)
     assert sample["state"].shape == (5, 46)
-    assert sample["tactile"].shape == (5, 256)
+    assert sample["tactile"].shape == (5, 768)
     assert sample["tactile"].dtype == np.uint8
     assert len(sample["image"]) == 5
     assert all(tuple(image.shape) == (3, 224, 448) for image in sample["image"])

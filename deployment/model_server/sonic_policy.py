@@ -12,7 +12,7 @@ PROTOCOL = "sonic_vla_v1"
 STATE_DIM = 46
 ACTION_HORIZON = 40
 ACTION_DIM = 78
-TACTILE_DIM = 256
+TACTILE_DIM = 768
 VIDEO_KEYS = ("ego_view_left", "ego_view_right")
 
 
@@ -41,7 +41,7 @@ def validate_observation(observation: Mapping[str, Any], *, requires_tactile: bo
 
     tactile_value = observation.get("tactile")
     if requires_tactile and tactile_value is None:
-        raise ValueError("This DiT4DiT checkpoint requires tactile uint8[256]")
+        raise ValueError(f"This DiT4DiT checkpoint requires tactile uint8[{TACTILE_DIM}]")
     if tactile_value is not None:
         tactile = np.asarray(tactile_value)
         if tactile.dtype != np.uint8 or tactile.shape != (TACTILE_DIM,):
