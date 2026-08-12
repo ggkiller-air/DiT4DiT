@@ -102,10 +102,10 @@ datasets:
 
 trainer:
   epochs: 100
-  max_train_steps: 800000
-  num_warmup_steps: 40000
-  save_interval: 160000
-  eval_interval: 1000
+  max_train_steps: 40000
+  num_warmup_steps: 2000
+  save_interval: 10000
+  eval_interval: 5000
   repeated_diffusion_steps: 1
   learning_rate:
     base: 1.0e-05

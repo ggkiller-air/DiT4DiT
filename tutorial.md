@@ -45,10 +45,13 @@ or proxy failure. After approval, run the download command above once before tra
 ## Full training
 
 DiT4DiT requires BF16 ZeRO-3 for full joint Cosmos and action-model training on four A800
-80GB GPUs. The fixed configs run 800k steps, save five 160k-step checkpoints, and use the
-measured safe batch of 1 per GPU (global batch 4). This processes 3.2M samples, matching
-the completed Isaac-GR00T run (`50,000 x 64`). The configs use `decord`; a 120-step HTD
-run measured negligible prefetched data wait.
+80GB GPUs. HTD uses the measured safe batch of 3 per GPU (global batch 12), 40k steps, and
+four 10k-step checkpoints. It takes about 16-18 hours including checkpoint/eval overhead
+and processes 480k samples (about 5 dataset passes). Batch 4 also runs at about 79GB/GPU,
+but leaves too little margin for unattended training; batch 3 uses about 71-72GB/GPU.
+JEPA remains at batch 1 because its future-vision targets have a larger memory footprint.
+These are time-budgeted fine-tunes, not forced sample-count matches. The configs use
+`decord`; a 120-step HTD run measured negligible prefetched data wait.
 
 ```bash
 cd /home/wzh/Projects/Uni_VLaT/DiT4DiT
