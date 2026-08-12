@@ -70,6 +70,20 @@ def test_sonic_modalities_follow_ablation_mode():
         config.modality_config_for(_data_config(action_video_freq_ratio=2))
 
 
+@pytest.mark.skipif(not DATASET_PATH.exists(), reason="desk_sweep is not installed")
+def test_train_val_split_has_no_episode_overlap():
+    cfg = _data_config(val_ratio=0.05)
+    train = get_vla_dataset(cfg, mode="train", seed=42)
+    val = get_vla_dataset(cfg, mode="val", seed=42)
+    train_ids = {trajectory_id for trajectory_id, _ in train.datasets[0].all_steps}
+    val_ids = {trajectory_id for trajectory_id, _ in val.datasets[0].all_steps}
+
+    assert train_ids
+    assert val_ids
+    assert train_ids.isdisjoint(val_ids)
+    assert train_ids | val_ids == set(train.datasets[0].trajectory_ids)
+
+
 def test_recommended_config_pins_the_isaac_tactile_layout():
     action_config = OmegaConf.load(RECOMMENDED_CONFIG).framework.action_model
     assert tuple(action_config.get("tactile_valid_idx", VALID_IDX)) == VALID_IDX

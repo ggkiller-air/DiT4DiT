@@ -32,20 +32,20 @@ def save_dataset_statistics(dataset_statistics, run_dir):
 
 
 
-def build_dataloader(cfg, dataset_py="lerobot_datasets_oxe"):
+def build_dataloader(cfg, dataset_py="lerobot_datasets_oxe", mode="train"):
 
     if dataset_py == "lerobot_datasets":
         from DiT4DiT.dataloader.lerobot_datasets import get_vla_dataset, collate_fn
         vla_dataset_cfg = cfg.datasets.vla_data
 
-        vla_dataset = get_vla_dataset(data_cfg=vla_dataset_cfg)
+        vla_dataset = get_vla_dataset(data_cfg=vla_dataset_cfg, mode=mode)
         
         num_workers = int(vla_dataset_cfg.get("num_workers", 4))
         vla_train_dataloader = DataLoader(
             vla_dataset,
             batch_size=cfg.datasets.vla_data.per_device_batch_size,
             collate_fn=collate_fn,
-            num_workers=num_workers,
+            num_workers=num_workers if mode == "train" else min(num_workers, 2),
             pin_memory=True,
             persistent_workers=num_workers > 0,
             prefetch_factor=(
@@ -55,7 +55,7 @@ def build_dataloader(cfg, dataset_py="lerobot_datasets_oxe"):
             ),
             # shuffle=True
         )        
-        if dist.get_rank() == 0: 
+        if mode == "train" and dist.get_rank() == 0:
             
             output_dir = Path(cfg.output_dir)
             vla_dataset.save_dataset_statistics(output_dir / "dataset_statistics.json")
