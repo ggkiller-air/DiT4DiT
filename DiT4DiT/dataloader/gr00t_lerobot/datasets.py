@@ -33,6 +33,7 @@ from typing import Sequence
 import os, random
 import numpy as np
 import pandas as pd
+import torch.distributed as dist
 from pydantic import BaseModel, Field, ValidationError
 from torch.utils.data import Dataset
 from tqdm import tqdm
@@ -58,7 +59,7 @@ LE_ROBOT_MODALITY_FILENAME = "meta/modality.json"
 LE_ROBOT_EPISODE_FILENAME = "meta/episodes.jsonl"
 LE_ROBOT_TASKS_FILENAME = "meta/tasks.jsonl"
 LE_ROBOT_INFO_FILENAME = "meta/info.json"
-LE_ROBOT_STATS_FILENAME = "meta/stats_gr00t.json"
+LE_ROBOT_STATS_FILENAME = "meta/stats_dit4dit.json"
 LE_ROBOT_DATA_FILENAME = "data/*/*.parquet"
 LE_ROBOT_STEPS_FILENAME = "meta/steps.pkl"
 EPSILON = 5e-4
@@ -364,30 +365,50 @@ class LeRobotSingleDataset(Dataset):
 
         # 2. Dataset statistics
         stats_path = self.dataset_path / LE_ROBOT_STATS_FILENAME
-        try:
-            with open(stats_path, "r") as f:
-                raw_statistics = json.load(f)
-            le_statistics = {}
-            for key, stat in raw_statistics.items():
-                if key.startswith("_"):
-                    continue
-                DatasetStatisticalValues.model_validate(stat)
-                le_statistics[key] = stat
-        except (FileNotFoundError, ValidationError) as e:
-            print(f"Failed to load dataset statistics: {e}")
+        required_stat_keys = {
+            meta.original_key or subkey
+            for modality in (le_modality_meta.state, le_modality_meta.action)
+            for subkey, meta in modality.items()
+        }
+
+        def load_statistics() -> dict | None:
+            try:
+                with open(stats_path, "r") as f:
+                    statistics = json.load(f)
+                for key, stat in statistics.items():
+                    if not key.startswith("_"):
+                        DatasetStatisticalValues.model_validate(stat)
+                statistics = {
+                    key: stat for key, stat in statistics.items() if not key.startswith("_")
+                }
+                if not required_stat_keys.issubset(statistics):
+                    return None
+                return statistics
+            except (FileNotFoundError, json.JSONDecodeError, ValidationError):
+                return None
+
+        is_main = not dist.is_initialized() or dist.get_rank() == 0
+        le_statistics = load_statistics() if is_main else None
+        if is_main and le_statistics is None:
             print(f"Calculating dataset statistics for {self.dataset_name}")
-            # Get all parquet files in the dataset paths
-            parquet_files = list((self.dataset_path).glob(LE_ROBOT_DATA_FILENAME))
-            parquet_files_filtered = []
-            #  parquet_files[0].name = "episode_033675.parquet" is broken file
-            for pf in parquet_files:
-                if "episode_033675.parquet" in pf.name:
-                    continue
-                parquet_files_filtered.append(pf)
-            
-            le_statistics = calculate_dataset_statistics(parquet_files_filtered)
-            with open(stats_path, "w") as f:
+            parquet_files = [
+                path
+                for path in self.dataset_path.glob(LE_ROBOT_DATA_FILENAME)
+                if "episode_033675.parquet" not in path.name
+            ]
+            le_statistics = calculate_dataset_statistics(parquet_files)
+            stats_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = stats_path.with_suffix(".tmp")
+            with open(tmp_path, "w") as f:
                 json.dump(le_statistics, f, indent=4)
+            os.replace(tmp_path, stats_path)
+
+        if dist.is_initialized():
+            dist.barrier()
+        if le_statistics is None:
+            le_statistics = load_statistics()
+        if le_statistics is None:
+            raise RuntimeError(f"Dataset statistics cache is missing after synchronization: {stats_path}")
         dataset_statistics = {}
         for our_modality in ["state", "action"]:
             dataset_statistics[our_modality] = {}

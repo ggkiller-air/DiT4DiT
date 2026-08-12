@@ -279,6 +279,10 @@ class VLATrainer(TrainerUtils):
 
     def _init_wandb(self):
         """initialize Weights & Biases"""
+        if not bool(self.config.get("wandb_enabled", True)):
+            if self.accelerator.is_main_process:
+                wandb.init(mode="disabled")
+            return
         if self.accelerator.is_main_process:
             wandb.init(
                 name=self.config.run_id,
@@ -624,14 +628,15 @@ class VLATrainer(TrainerUtils):
 
     def _finalize_training(self):
         """training end processing"""
-        # save final model
+        # ZeRO-3 state gathering is collective, so every rank must participate.
+        state_dict = self.accelerator.get_state_dict(self.model)
         if self.accelerator.is_main_process:
             final_checkpoint = os.path.join(self.config.output_dir, "final_model")
             os.makedirs(final_checkpoint, exist_ok=True)
-            state_dict = self.accelerator.get_state_dict(self.model)
             torch.save(state_dict, os.path.join(final_checkpoint, "pytorch_model.pt"))
             self._save_resolved_config(Path(final_checkpoint) / "config.yaml")
             logger.info(f"Training complete. Final model saved at {final_checkpoint}")
+        del state_dict
 
 
         # close W&B

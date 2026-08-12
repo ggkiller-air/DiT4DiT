@@ -40,11 +40,19 @@ def build_dataloader(cfg, dataset_py="lerobot_datasets_oxe"):
 
         vla_dataset = get_vla_dataset(data_cfg=vla_dataset_cfg)
         
+        num_workers = int(vla_dataset_cfg.get("num_workers", 4))
         vla_train_dataloader = DataLoader(
             vla_dataset,
             batch_size=cfg.datasets.vla_data.per_device_batch_size,
             collate_fn=collate_fn,
-            num_workers=4,
+            num_workers=num_workers,
+            pin_memory=True,
+            persistent_workers=num_workers > 0,
+            prefetch_factor=(
+                int(vla_dataset_cfg.get("prefetch_factor", 4))
+                if num_workers > 0
+                else None
+            ),
             # shuffle=True
         )        
         if dist.get_rank() == 0: 

@@ -45,8 +45,10 @@ or proxy failure. After approval, run the download command above once before tra
 ## Full training
 
 DiT4DiT requires BF16 ZeRO-3 for full joint Cosmos and action-model training on four A800
-80GB GPUs. The fixed configs run 20k steps, save at 10k and 20k, and use the measured safe
-batch of 1 per GPU (global batch 4).
+80GB GPUs. The fixed configs run 800k steps, save five 160k-step checkpoints, and use the
+measured safe batch of 1 per GPU (global batch 4). This processes 3.2M samples, matching
+the completed Isaac-GR00T run (`50,000 x 64`). The configs use `decord`; a 120-step HTD
+run measured negligible prefetched data wait.
 
 ```bash
 cd /home/wzh/Projects/Uni_VLaT/DiT4DiT
